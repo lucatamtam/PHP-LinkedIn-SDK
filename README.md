@@ -13,7 +13,7 @@ $li = new LinkedIn(
   array(
     'api_key' => 'yourapikey', 
     'api_secret' => 'yourapisecret', 
-    'callback_url' => 'https://yourdomain.com/redirecthere'
+    'callback_url' => 'https://yourdomain.com/redirecthere' // OPTIONAL
   )
 );
 ```
@@ -53,4 +53,25 @@ $li = new LinkedIn(
     ),
   )
 );
+```
+
+## [Advanced] Make the callback url optional
+> **Note:** You must have the `callback_url` set for use authentication methods. Be careful :)
+
+If you already have a valid access token stored, you may omit the setting ```callback_url``` from your config array on instantiation. Depending of the logic you have used on your code it might be useful. You may use two ways:
+
+#### 1. Use ```setCallbackUrl()``` for set the callback url after the instantiation.
+```php
+$li->setCallbackUrl('https://yourdomain.com/redirecthere');
+```
+
+#### 2. Use as parameter on methods while in authentication flow.
+
+> The passed parameter must be the same for both methods below!
+
+```php
+$my_callback_url = 'https://yourdomain.com/redirecthere';
+
+$url = $li->getLoginUrl($my_scopes, $my_callback_url); // $my_scopes is the array of SCOPES
+$token = $li->getAccessToken($_REQUEST['code'], $my_callback_url);
 ```
