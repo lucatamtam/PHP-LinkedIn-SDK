@@ -12,7 +12,7 @@ class LinkedIn
     private $_curl_handle = null;
 
     const API_BASE = 'https://api.linkedin.com/v1';
-    const OAUTH_BASE = 'https://www.linkedin.com/uas/oauth2';
+    const OAUTH_BASE = 'https://www.linkedin.com/oauth/v2';
 
     const SCOPE_BASIC_PROFILE = 'r_basicprofile'; // Name, photo, headline, and current positions
     const SCOPE_FULL_PROFILE = 'r_fullprofile'; // Full profile including experience, education, skills, and recommendations
@@ -23,6 +23,7 @@ class LinkedIn
     const SCOPE_READ_WRITE_GROUPS = 'rw_groups'; // Retrieve and post group discussions as you
     const SCOPE_WRITE_MESSAGES = 'w_messages'; // Send messages and invitations to connect as you
     const SCOPE_WRITE_SHARE = 'w_share'; // Share url to your contacts
+    const SCOPE_READ_WRITE_COMPANY_admin = 'rw_company_admin';
 
     const HTTP_METHOD_GET = 'GET';
     const HTTP_METHOD_POST = 'POST';
@@ -30,7 +31,7 @@ class LinkedIn
     const HTTP_METHOD_DELETE = 'DELETE';
 
     /**
-     * @param array $config (api_key, api_secret, callback_url)
+     * @param array $config (api_key, api_secret, callback_url[optional])
      * @throws \InvalidArgumentException
      * @throws \RuntimeException
      */
@@ -44,7 +45,7 @@ class LinkedIn
             throw new \InvalidArgumentException('Invalid api secret - make sure api_secret is defined in the config array');
         }
 
-        if (!isset($config['callback_url']) || empty($config['callback_url'])) {
+        if (!isset($config['callback_url']) && empty($config['callback_url'])) {
             throw new \InvalidArgumentException('Invalid callback url - make sure callback_url is defined in the config array');
         }
 
@@ -56,14 +57,37 @@ class LinkedIn
     }
 
     /**
+     * Set the callback url after the instance is already created.
+     *
+     * @param string $callback_url
+     */
+    public function setCallbackUrl($callback_url = null)
+    {
+        if (empty($callback_url)) {
+            throw new \InvalidArgumentException('Invalid callback url - it should be set to login the user or get a new token');
+        }
+
+        $this->_config['callback_url'] = (string) $callback_url;
+    }
+
+    /**
      * Get the login url, pass scope to request specific permissions
      *
      * @param array $scope - an array of requested permissions (can use scope constants defined in this class)
      * @param string $state - a unique identifier for this user, if none is passed, one is generated via uniqid
+     * @param string $callback_url - if empty, the callback url from config array set at constructor or using setCallbackUrl() must be set
      * @return string $url
      */
-    public function getLoginUrl(array $scope = array(), $state = null)
+    public function getLoginUrl(array $scope = array(), $state = null, $callback_url = null)
     {
+        if (empty($callback_url)) {
+            if (!isset($this->_config['callback_url']) || empty($this->_config['callback_url'])) {
+                throw new \InvalidArgumentException('Invalid callback url. Inform the "callback_url" parameter');
+            }
+
+            $callback_url = $this->_config['callback_url'];
+        }
+
         if (!empty($scope)) {
             $scope = implode('%20', $scope);
         }
@@ -73,7 +97,7 @@ class LinkedIn
         }
         $this->setState($state);
 
-        $url = self::OAUTH_BASE . "/authorization?response_type=code&client_id={$this->_config['api_key']}&scope={$scope}&state={$state}&redirect_uri=" . urlencode($this->_config['callback_url']);
+        $url = self::OAUTH_BASE . "/authorization?response_type=code&client_id={$this->_config['api_key']}&scope={$scope}&state={$state}&redirect_uri=" . urlencode($callback_url);
 
         return $url;
     }
@@ -82,14 +106,23 @@ class LinkedIn
      * Exchange the authorization code for an access token
      *
      * @param string $authorization_code
+     * @param string $callback_url - if empty, the callback url from config array set at constructor or using setCallbackUrl() must be set
      * @throws \InvalidArgumentException
      * @throws \RuntimeException
      * @return string $access_token
      */
-    public function getAccessToken($authorization_code = null)
+    public function getAccessToken($authorization_code = null, $callback_url = null)
     {
         if (!empty($this->_access_token)) {
             return $this->_access_token;
+        }
+
+        if (empty($callback_url)) {
+            if (!isset($this->_config['callback_url']) || empty($this->_config['callback_url'])) {
+                throw new \InvalidArgumentException('Invalid callback url. Inform the "callback_url" parameter');
+            }
+
+            $callback_url = $this->_config['callback_url'];
         }
 
         if (empty($authorization_code)) {
@@ -101,13 +134,10 @@ class LinkedIn
             'code' => $authorization_code,
             'client_id' => $this->_config['api_key'],
             'client_secret' => $this->_config['api_secret'],
-            'redirect_uri' => $this->_config['callback_url']
+            'redirect_uri' => $callback_url
         );
 
-        /** Temp bug fix as per https://developer.linkedin.com/comment/28938#comment-28938 **/
-        $tmp_params = http_build_query($params);
-
-        $data = $this->_makeRequest(self::OAUTH_BASE . '/accessToken?' . $tmp_params, array(), self::HTTP_METHOD_POST, array('x-li-format: json'));
+        $data = $this->_makeRequest(self::OAUTH_BASE . '/accessToken', $params, self::HTTP_METHOD_POST, array('x-li-format: json'));
         if (isset($data['error']) && !empty($data['error'])) {
             throw new \RuntimeException('Access Token Request Error: ' . $data['error'] . ' -- ' . $data['error_description']);
         }
@@ -237,10 +267,11 @@ class LinkedIn
      */
     public function fetch($endpoint, array $payload = array(), $method = 'GET', array $headers = array(), array $curl_options = array())
     {
-        $concat = (stristr($endpoint,'?') ? '&' : '?');
-        $endpoint = self::API_BASE . '/' . trim($endpoint, '/\\') . $concat;
+        $endpoint = self::API_BASE . '/' . trim($endpoint, '/\\') . '?oauth2_access_token=' . $this->getAccessToken();
+        //$concat = (stristr($endpoint, '?') ? '&' : '?');
+        //$endpoint = self::API_BASE . '/' . trim($endpoint, '/\\') . $concat;
         $headers[] = 'x-li-format: json';
-        $headers[] = 'Authorization: Bearer ' . $this->getAccessToken();
+        //$headers[] = 'Authorization: Bearer ' . $this->getAccessToken();
 
         return $this->_makeRequest($endpoint, $payload, $method, $headers, $curl_options);
     }
@@ -282,21 +313,33 @@ class LinkedIn
         if (!empty($payload)) {
             if ($options[CURLOPT_CUSTOMREQUEST] == self::HTTP_METHOD_POST || $options[CURLOPT_CUSTOMREQUEST] == self::HTTP_METHOD_PUT) {
                 $options[CURLOPT_POST] = true;
-                $options[CURLOPT_POSTFIELDS] = json_encode($payload);
-                $headers[] = 'Content-Length: ' . strlen($options[CURLOPT_POSTFIELDS]);
-                $headers[] = 'Content-Type: application/json';
+                // Check if request is for accessToken
+                $tmp_url = explode('/', $url);
+                if ($tmp_url[count($tmp_url)-1] == 'accessToken') {
+                    // set header and postfileds for accessToken request
+                    $options[CURLOPT_POSTFIELDS] = http_build_query($payload);
+                    $headers[] = 'Content-Length: ' . strlen($options[CURLOPT_POSTFIELDS]);
+                    $headers[] = 'Content-Type: application/x-www-form-urlencoded';
+                } else {
+                    $options[CURLOPT_POSTFIELDS] = json_encode($payload);
+                    $headers[] = 'Content-Length: ' . strlen($options[CURLOPT_POSTFIELDS]);
+                    $headers[] = 'Content-Type: application/json';
+                }
                 $options[CURLOPT_HTTPHEADER] = $headers;
             } else {
                 $options[CURLOPT_URL] .= '&' . http_build_query($payload, '&');
             }
+        } else {
+            $headers[] = 'Content-Length: 0';
+            $options[CURLOPT_HTTPHEADER] = $headers;                        
         }
 
         if (!empty($curl_options)) {
-            $options = array_replace($options, $curl_options);
+            $options = array_merge($options, $curl_options);
         }
 
         if (isset($this->_config['curl_options']) && !empty($this->_config['curl_options'])) {
-            $options = array_replace($options, $this->_config['curl_options']);
+            $options = array_merge($options, $this->_config['curl_options']);
         }
 
         curl_setopt_array($ch, $options);
